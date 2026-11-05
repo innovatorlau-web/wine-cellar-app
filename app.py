@@ -1,7 +1,8 @@
 import datetime
-import os
 import streamlit as st
 import pandas as pd
+import gspread
+from google.oauth2.service_account import Credentials
 
 # Page Configuration
 st.set_page_config(
@@ -14,53 +15,80 @@ st.set_page_config(
 st.title("🍷 CellarIQ & Vintage Intelligence")
 st.markdown("Track your wine fridge inventory, discover optimal drinking windows, review famous critic scores, and get detailed professional tasting profiles.")
 
-# Sidebar Navigation
-tab_input, tab_stock, tab_settings = st.tabs(["➕ Add New Wine", "📦 Cellar Stock List", "⚙️ Settings & Alerts"])
+# -------------------------------------------------------------
+# GOOGLE SHEETS AUTHENTICATION & LIVE SYNC
+# -------------------------------------------------------------
+@st.cache_resource
+def get_gspread_client():
+    """Authenticates with Google Sheets API using Streamlit Secrets."""
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    credentials = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=scopes
+    )
+    return gspread.authorize(credentials)
+
+def get_or_create_sheet():
+    """Gets existing Google Sheet or creates a new 'Wine Cellar Inventory' sheet."""
+    try:
+        client = get_gspread_client()
+        sheet_title = "My Wine Cellar Inventory"
+        try:
+            sh = client.open(sheet_title)
+        except gspread.SpreadsheetNotFound:
+            sh = client.create(sheet_title)
+            worksheet = sh.get_worksheet(0)
+            headers = [
+                "Wine Name", "Vintage", "Region", "Status", "Drink Start",
+                "Peak End", "JS Score", "RP Score", "WE Score", "JR Score", "Details"
+            ]
+            worksheet.append_row(headers)
+        return sh.get_worksheet(0)
+    except Exception as e:
+        st.error(f"Google Sheets Connection Warning: {e}")
+        return None
+
+# Load stock directly from Google Sheets
+worksheet = get_or_create_sheet()
+
+def load_stock_data():
+    if worksheet:
+        data = worksheet.get_all_records()
+        return pd.DataFrame(data) if data else pd.DataFrame()
+    return pd.DataFrame()
 
 # -------------------------------------------------------------
-# SIMULATED INTELLIGENCE & RESEARCH ENGINE (Replace with real LLM/Search API in production)
+# SIMULATED INTELLIGENCE & RESEARCH ENGINE
 # -------------------------------------------------------------
 def analyze_wine_vintage(wine_name, vintage_year, region=""):
-    """
-    Simulates AI research over web sources, vintage charts, and critic databases.
-    In production, replace this with an LLM call using web search tools.
-    """
     current_year = datetime.datetime.now().year
     
-    # Simple logic to simulate vintage curve based on age
-    age = current_year - int(vintage_year) if vintage_year.isdigit() else 5
-    
-    # Mocking realistic data based on profile
-    start_window = int(vintage_year) + 5 if vintage_year.isdigit() else 2024
+    start_window = int(vintage_year) + 5 if vintage_year.isdigit() else current_year
     peak_start = start_window + 3
     peak_end = start_window + 12
     decline_year = peak_end + 5
     
-    # Determine Status
     if current_year < start_window:
         status = "🔵 Aging / Sleeping"
-        status_code = "aging"
     elif start_window <= current_year < peak_start:
         status = "🟢 Entering Window"
-        status_code = "entering"
     elif peak_start <= current_year <= peak_end:
         status = "⭐ Optimum Peak"
-        status_code = "peak"
     else:
         status = "🔴 Past Peak / Urgent"
-        status_code = "past_peak"
 
-    # Detailed Professional Tasting Profile
     tasting_profile = {
         "appearance": "Deep ruby core with garnet rims and high viscosity.",
         "nose": "Intense aromas of blackcurrant, dark cherry, graphite, cigar box, and a subtle touch of French oak vanilla.",
         "palate": "Full-bodied with structured, velvety tannins and balanced, refreshing acidity. Layers of blackberry, cassis, espresso bean, and secondary earthiness.",
         "structure": "Alcohol: 13.5% | Tannins: Firm and fine-grained | Acidity: Medium-Plus",
-        "decanting": "Decant for 1 to 2 hours before serving to allow oxygenation and softening of primary tannins.",
+        "decanting": "Decant for 1 to 2 hours before serving to allow oxygenation.",
         "temp": "Serve at 16°C – 18°C (60°F – 64°F)."
     }
 
-    # Critic Scores (Mocked realistic top scores)
     scores = {
         "James Suckling (JS)": "95 / 100",
         "Robert Parker (RP)": "93 / 100",
@@ -71,9 +99,8 @@ def analyze_wine_vintage(wine_name, vintage_year, region=""):
     return {
         "wine_name": wine_name,
         "vintage": vintage_year,
-        "region": region if region else "Bordeaux / Premium Appellation",
+        "region": region if region else "Premium Appellation",
         "status": status,
-        "status_code": status_code,
         "drink_start": start_window,
         "peak_start": peak_start,
         "peak_end": peak_end,
@@ -82,23 +109,8 @@ def analyze_wine_vintage(wine_name, vintage_year, region=""):
         "profile": tasting_profile
     }
 
-# Initialize Session State for Stock Storage (Mocking Google Sheets database)
-if "stock_list" not in st.session_state:
-    st.session_state.stock_list = [
-        {
-            "Wine Name": "Château Margaux",
-            "Vintage": "2015",
-            "Region": "Margaux, Bordeaux",
-            "Status": "🟢 Entering Window",
-            "Drink Start": 2023,
-            "Peak End": 2035,
-            "JS Score": "98 / 100",
-            "RP Score": "97 / 100",
-            "WE Score": "96 / 100",
-            "JR Score": "18.5 / 20",
-            "Details": "Classic vintage with immense structure and aromatic complexity."
-        }
-    ]
+# App Tabs
+tab_input, tab_stock, tab_settings = st.tabs(["➕ Add New Wine", "📦 Cellar Stock List", "⚙️ Settings & Alerts"])
 
 # -------------------------------------------------------------
 # TAB 1: ADD NEW WINE & INSTANT BRIEFING CARD
@@ -122,66 +134,70 @@ with tab_input:
             st.error("Please provide at least the Wine Name and Vintage Year.")
         else:
             with st.spinner("Analyzing vintage charts, critic ratings, and aging curves via AI research..."):
-                result = analyze_wine_vintage(input_name, input_vintage, input_region)
-            
+                st.session_state.current_analysis = analyze_wine_vintage(input_name, input_vintage, input_region)
             st.success("Analysis Complete!")
-            
-            # --- INSTANT BRIEFING CARD ---
-            st.markdown("---")
-            st.markdown(f"### 📋 Instant Briefing: {result['wine_name']} ({result['vintage']})")
-            
-            col_a, col_b = st.columns([1, 1])
-            with col_a:
-                st.markdown(f"**Region:** {result['region']}")
-                st.markdown(f"**Current Status:** {result['status']}")
-                st.markdown(f"**Drinking Window:** {result['drink_start']} – {result['decline']}")
-                st.markdown(f"**Optimum Peak Plateau:** {result['peak_start']} – {result['peak_end']}")
-            
-            with col_b:
-                st.markdown("#### 🏆 Famous Critic Ratings")
-                for critic, score in result["scores"].items():
-                    st.markdown(f"- **{critic}**: `{score}`")
 
-            st.markdown("#### 📝 Detailed Professional Tasting Profile")
-            p = result["profile"]
-            st.info(
-                f"**Appearance:** {p['appearance']}\n\n"
-                f"**Nose:** {p['nose']}\n\n"
-                f"**Palate:** {p['palate']}\n\n"
-                f"**Structure & Specs:** {p['structure']}\n\n"
-                f"**Decanting Advice:** {p['decanting']}\n\n"
-                f"**Serving Temperature:** {p['temp']}"
-            )
+    if "current_analysis" in st.session_state:
+        result = st.session_state.current_analysis
+        st.markdown("---")
+        st.markdown(f"### 📋 Instant Briefing: {result['wine_name']} ({result['vintage']})")
+        
+        col_a, col_b = st.columns([1, 1])
+        with col_a:
+            st.markdown(f"**Region:** {result['region']}")
+            st.markdown(f"**Current Status:** {result['status']}")
+            st.markdown(f"**Drinking Window:** {result['drink_start']} – {result['decline']}")
+            st.markdown(f"**Optimum Peak Plateau:** {result['peak_start']} – {result['peak_end']}")
+        
+        with col_b:
+            st.markdown("#### 🏆 Famous Critic Ratings")
+            for critic, score in result["scores"].items():
+                st.markdown(f"- **{critic}**: `{score}`")
 
-            # Save to stock list button
-            if st.button("💾 Save to My Wine Fridge Stock List"):
-                new_entry = {
-                    "Wine Name": result["wine_name"],
-                    "Vintage": result["vintage"],
-                    "Region": result["region"],
-                    "Status": result["status"],
-                    "Drink Start": result["drink_start"],
-                    "Peak End": result["peak_end"],
-                    "JS Score": result["scores"]["James Suckling (JS)"],
-                    "RP Score": result["scores"]["Robert Parker (RP)"],
-                    "WE Score": result["scores"]["Wine Enthusiast (WE)"],
-                    "JR Score": result["scores"]["Jancis Robinson (JR)"],
-                    "Details": p["palate"]
-                }
-                st.session_state.stock_list.append(new_entry)
-                st.success("Successfully added to your stock list inventory!")
+        st.markdown("#### 📝 Detailed Professional Tasting Profile")
+        p = result["profile"]
+        st.info(
+            f"**Appearance:** {p['appearance']}\n\n"
+            f"**Nose:** {p['nose']}\n\n"
+            f"**Palate:** {p['palate']}\n\n"
+            f"**Structure & Specs:** {p['structure']}\n\n"
+            f"**Decanting Advice:** {p['decanting']}\n\n"
+            f"**Serving Temperature:** {p['temp']}"
+        )
+
+        if st.button("💾 Save to My Wine Fridge Stock List"):
+            new_row = [
+                result["wine_name"],
+                result["vintage"],
+                result["region"],
+                result["status"],
+                result["drink_start"],
+                result["peak_end"],
+                result["scores"]["James Suckling (JS)"],
+                result["scores"]["Robert Parker (RP)"],
+                result["scores"]["Wine Enthusiast (WE)"],
+                result["scores"]["Jancis Robinson (JR)"],
+                p["palate"]
+            ]
+            if worksheet:
+                worksheet.append_row(new_row)
+                st.success("Successfully saved to your live Google Sheet stock list!")
+                del st.session_state.current_analysis
+                st.rerun()
+            else:
+                st.error("Google Sheet integration not configured.")
 
 # -------------------------------------------------------------
-# TAB 2: CELLAR STOCK LIST (GOOGLE SHEETS SYNC VIEW)
+# TAB 2: CELLAR STOCK LIST & DELETE FEATURE
 # -------------------------------------------------------------
 with tab_stock:
     st.subheader("📦 Your Wine Fridge Inventory")
     
-    if len(st.session_state.stock_list) == 0:
+    df_stock = load_stock_data()
+    
+    if df_stock.empty:
         st.info("Your cellar stock list is currently empty. Add wines from the 'Add New Wine' tab.")
     else:
-        df_stock = pd.DataFrame(st.session_state.stock_list)
-        
         # Filter options
         col_f1, col_f2 = st.columns(2)
         with col_f1:
@@ -190,15 +206,34 @@ with tab_stock:
             search_query = st.text_input("Search Wine Name", "")
 
         filtered_df = df_stock.copy()
-        if status_filter != "All":
+        if status_filter != "All" and "Status" in filtered_df.columns:
             filtered_df = filtered_df[filtered_df["Status"] == status_filter]
-        if search_query:
+        if search_query and "Wine Name" in filtered_df.columns:
             filtered_df = filtered_df[filtered_df["Wine Name"].str.contains(search_query, case=False, na=False)]
 
         st.dataframe(filtered_df, use_container_width=True)
         
         st.markdown("---")
-        st.markdown("🔗 *Connected to Google Sheets Database (Live Sync Active)*")
+        st.markdown("### 🗑️ Remove Wine from Inventory")
+        
+        wine_options = [f"{row['Wine Name']} ({row['Vintage']})" for _, row in df_stock.iterrows()]
+        selected_wine_to_delete = st.selectbox("Select a wine to delete", options=wine_options)
+        
+        if st.button("🗑️ Delete Selected Wine"):
+            if selected_wine_to_delete and worksheet:
+                all_records = worksheet.get_all_records()
+                row_to_delete = None
+                for idx, record in enumerate(all_records):
+                    if f"{record['Wine Name']} ({record['Vintage']})" == selected_wine_to_delete:
+                        row_to_delete = idx + 2  # +2 accounts for 1-indexing and the header row
+                        break
+                
+                if row_to_delete:
+                    worksheet.delete_rows(row_to_delete)
+                    st.success(f"Successfully deleted '{selected_wine_to_delete}' from your inventory!")
+                    st.rerun()
+                else:
+                    st.error("Could not find the specified row in Google Sheets.")
 
 # -------------------------------------------------------------
 # TAB 3: SETTINGS & NOTIFICATIONS
@@ -206,20 +241,9 @@ with tab_stock:
 with tab_settings:
     st.subheader("⚙️ App Settings & Notification Preferences")
     
-    st.markdown("Configure how and when you want to receive alerts regarding your wine drinking windows.")
-    
-    notif_channel = st.multiselect(
-        "Preferred Notification Channels",
-        ["Email Digest", "Mobile Push Notification", "Telegram Webhook"],
-        default=["Email Digest"]
-    )
-    
-    freq = st.selectbox(
-        "Alert Frequency",
-        ["Weekly Digest", "Monthly Audit", "Instant Alert (When bottle enters optimum window)"]
-    )
-    
-    user_email = st.text_input("Notification Email Address", "calvin@example.com")
+    st.multiselect("Preferred Notification Channels", ["Email Digest", "Mobile Push Notification", "Telegram Webhook"], default=["Email Digest"])
+    st.selectbox("Alert Frequency", ["Weekly Digest", "Monthly Audit", "Instant Alert (When bottle enters optimum window)"])
+    st.text_input("Notification Email Address", "calvin@example.com")
     
     if st.button("Save Settings"):
         st.success("Preferences updated successfully!")
