@@ -1,8 +1,7 @@
 import datetime
+import io
 import streamlit as st
 import pandas as pd
-import gspread
-from google.oauth2.service_account import Credentials
 
 # Page Configuration
 st.set_page_config(
@@ -16,49 +15,19 @@ st.title("🍷 CellarIQ & Vintage Intelligence")
 st.markdown("Track your wine fridge inventory, discover optimal drinking windows, review famous critic scores, and get detailed professional tasting profiles.")
 
 # -------------------------------------------------------------
-# GOOGLE SHEETS AUTHENTICATION & LIVE SYNC
+# LOCAL STORAGE & SESSION INVENTORY MANAGEMENT
 # -------------------------------------------------------------
-@st.cache_resource
-def get_gspread_client():
-    """Authenticates with Google Sheets API using Streamlit Secrets."""
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    credentials = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=scopes
-    )
-    return gspread.authorize(credentials)
+if "inventory" not in st.session_state:
+    st.session_state.inventory = []
 
-def get_or_create_sheet():
-    """Gets existing Google Sheet or creates a new 'Wine Cellar Inventory' sheet."""
-    try:
-        client = get_gspread_client()
-        sheet_title = "My Wine Cellar Inventory"
-        try:
-            sh = client.open(sheet_title)
-        except gspread.SpreadsheetNotFound:
-            sh = client.create(sheet_title)
-            worksheet = sh.get_worksheet(0)
-            headers = [
-                "Wine Name", "Vintage", "Region", "Status", "Drink Start",
-                "Peak End", "JS Score", "RP Score", "WE Score", "JR Score", "Details"
-            ]
-            worksheet.append_row(headers)
-        return sh.get_worksheet(0)
-    except Exception as e:
-        st.error(f"Google Sheets Connection Warning: {e}")
-        return None
-
-# Load stock directly from Google Sheets
-worksheet = get_or_create_sheet()
-
-def load_stock_data():
-    if worksheet:
-        data = worksheet.get_all_records()
-        return pd.DataFrame(data) if data else pd.DataFrame()
-    return pd.DataFrame()
+def get_inventory_df():
+    """Returns the current inventory as a pandas DataFrame."""
+    if st.session_state.inventory:
+        return pd.DataFrame(st.session_state.inventory)
+    return pd.DataFrame(columns=[
+        "Wine Name", "Vintage", "Region", "Status", "Drink Start",
+        "Peak End", "JS Score", "RP Score", "WE Score", "JR Score", "Details"
+    ])
 
 # -------------------------------------------------------------
 # SIMULATED INTELLIGENCE & RESEARCH ENGINE
@@ -110,7 +79,7 @@ def analyze_wine_vintage(wine_name, vintage_year, region=""):
     }
 
 # App Tabs
-tab_input, tab_stock, tab_settings = st.tabs(["➕ Add New Wine", "📦 Cellar Stock List", "⚙️ Settings & Alerts"])
+tab_input, tab_stock, tab_settings = st.tabs(["➕ Add New Wine", "📦 Cellar Stock List", "⚙️ Settings & Backup"])
 
 # -------------------------------------------------------------
 # TAB 1: ADD NEW WINE & INSTANT BRIEFING CARD
@@ -133,7 +102,7 @@ with tab_input:
         if not input_name or not input_vintage:
             st.error("Please provide at least the Wine Name and Vintage Year.")
         else:
-            with st.spinner("Analyzing vintage charts, critic ratings, and aging curves via AI research..."):
+            with st.spinner("Analyzing vintage charts, critic ratings, and aging curves..."):
                 st.session_state.current_analysis = analyze_wine_vintage(input_name, input_vintage, input_region)
             st.success("Analysis Complete!")
 
@@ -165,27 +134,24 @@ with tab_input:
             f"**Serving Temperature:** {p['temp']}"
         )
 
-        if st.button("💾 Save to My Wine Fridge Stock List"):
-            new_row = [
-                result["wine_name"],
-                result["vintage"],
-                result["region"],
-                result["status"],
-                result["drink_start"],
-                result["peak_end"],
-                result["scores"]["James Suckling (JS)"],
-                result["scores"]["Robert Parker (RP)"],
-                result["scores"]["Wine Enthusiast (WE)"],
-                result["scores"]["Jancis Robinson (JR)"],
-                p["palate"]
-            ]
-            if worksheet:
-                worksheet.append_row(new_row)
-                st.success("Successfully saved to your live Google Sheet stock list!")
-                del st.session_state.current_analysis
-                st.rerun()
-            else:
-                st.error("Google Sheet integration not configured.")
+        if st.button("💾 Save to My Cellar Inventory"):
+            new_entry = {
+                "Wine Name": result["wine_name"],
+                "Vintage": result["vintage"],
+                "Region": result["region"],
+                "Status": result["status"],
+                "Drink Start": result["drink_start"],
+                "Peak End": result["peak_end"],
+                "JS Score": result["scores"]["James Suckling (JS)"],
+                "RP Score": result["scores"]["Robert Parker (RP)"],
+                "WE Score": result["scores"]["Wine Enthusiast (WE)"],
+                "JR Score": result["scores"]["Jancis Robinson (JR)"],
+                "Details": p["palate"]
+            }
+            st.session_state.inventory.append(new_entry)
+            st.success("Successfully saved to your cellar stock list!")
+            del st.session_state.current_analysis
+            st.rerun()
 
 # -------------------------------------------------------------
 # TAB 2: CELLAR STOCK LIST & DELETE FEATURE
@@ -193,10 +159,10 @@ with tab_input:
 with tab_stock:
     st.subheader("📦 Your Wine Fridge Inventory")
     
-    df_stock = load_stock_data()
+    df_stock = get_inventory_df()
     
     if df_stock.empty:
-        st.info("Your cellar stock list is currently empty. Add wines from the 'Add New Wine' tab.")
+        st.info("Your cellar stock list is currently empty. Add wines from the 'Add New Wine' tab or import a CSV file in Settings.")
     else:
         # Filter options
         col_f1, col_f2 = st.columns(2)
@@ -216,34 +182,46 @@ with tab_stock:
         st.markdown("---")
         st.markdown("### 🗑️ Remove Wine from Inventory")
         
-        wine_options = [f"{row['Wine Name']} ({row['Vintage']})" for _, row in df_stock.iterrows()]
+        wine_options = [f"{idx + 1}. {row['Wine Name']} ({row['Vintage']})" for idx, row in df_stock.iterrows()]
         selected_wine_to_delete = st.selectbox("Select a wine to delete", options=wine_options)
         
         if st.button("🗑️ Delete Selected Wine"):
-            if selected_wine_to_delete and worksheet:
-                all_records = worksheet.get_all_records()
-                row_to_delete = None
-                for idx, record in enumerate(all_records):
-                    if f"{record['Wine Name']} ({record['Vintage']})" == selected_wine_to_delete:
-                        row_to_delete = idx + 2  # +2 accounts for 1-indexing and the header row
-                        break
-                
-                if row_to_delete:
-                    worksheet.delete_rows(row_to_delete)
-                    st.success(f"Successfully deleted '{selected_wine_to_delete}' from your inventory!")
-                    st.rerun()
-                else:
-                    st.error("Could not find the specified row in Google Sheets.")
+            if selected_wine_to_delete:
+                # Extract index
+                selected_idx = int(selected_wine_to_delete.split(".")[0]) - 1
+                deleted_item = st.session_state.inventory.pop(selected_idx)
+                st.success(f"Successfully deleted '{deleted_item['Wine Name']} ({deleted_item['Vintage']})'!")
+                st.rerun()
 
 # -------------------------------------------------------------
-# TAB 3: SETTINGS & NOTIFICATIONS
+# TAB 3: SETTINGS, IMPORT & EXPORT
 # -------------------------------------------------------------
 with tab_settings:
-    st.subheader("⚙️ App Settings & Notification Preferences")
+    st.subheader("⚙️ Local Data Backup & Settings")
     
-    st.multiselect("Preferred Notification Channels", ["Email Digest", "Mobile Push Notification", "Telegram Webhook"], default=["Email Digest"])
-    st.selectbox("Alert Frequency", ["Weekly Digest", "Monthly Audit", "Instant Alert (When bottle enters optimum window)"])
-    st.text_input("Notification Email Address", "calvin@example.com")
+    st.markdown("### 📥 Backup & Export Inventory")
+    st.markdown("Export your cellar list to a CSV file to keep an offline backup on your phone or PC.")
     
-    if st.button("Save Settings"):
-        st.success("Preferences updated successfully!")
+    df_current = get_inventory_df()
+    if not df_current.empty:
+        csv_buffer = df_current.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📄 Download Inventory CSV",
+            data=csv_buffer,
+            file_name=f"wine_cellar_backup_{datetime.date.today()}.csv",
+            mime="text/csv"
+        )
+    else:
+        st.caption("Add wines to your list to enable CSV download.")
+
+    st.markdown("---")
+    st.markdown("### 📤 Import Existing Inventory CSV")
+    uploaded_file = st.file_uploader("Upload a previously exported wine inventory CSV", type=["csv"])
+    if uploaded_file is not None:
+        try:
+            imported_df = pd.read_csv(uploaded_file)
+            st.session_state.inventory = imported_df.to_dict(orient="records")
+            st.success("Successfully restored your wine inventory from CSV!")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Failed to read CSV file: {e}")
